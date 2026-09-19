@@ -1,0 +1,220 @@
+/* WARS — canvas UI: HUD, banners, title/pause/game-over screens, level-up cards.
+   All in logical view space (Config.VIEW), so it scales with the letterbox. */
+(function (W) {
+  'use strict';
+  const U = W.Util;
+  const CFG = W.Config;
+  const C = CFG.COLORS;
+  const FONT = 'ui-monospace, "DejaVu Sans Mono", Consolas, monospace';
+
+  function text(ctx, s, x, y, size, color, align, weight) {
+    ctx.font = `${weight || 700} ${size}px ${FONT}`;
+    ctx.textAlign = align || 'left';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillStyle = 'rgba(0,0,0,.55)';
+    ctx.fillText(s, x + 1, y + 1);
+    ctx.fillStyle = color;
+    ctx.fillText(s, x, y);
+  }
+
+  function bar(ctx, x, y, w, h, f, color, bg, label) {
+    ctx.fillStyle = bg || 'rgba(0,0,0,.55)';
+    ctx.fillRect(x, y, w, h);
+    ctx.fillStyle = color;
+    ctx.fillRect(x, y, w * U.clamp(f, 0, 1), h);
+    ctx.strokeStyle = 'rgba(255,255,255,.18)'; ctx.lineWidth = 1;
+    ctx.strokeRect(x + .5, y + .5, w - 1, h - 1);
+    if (label) text(ctx, label, x + 4, y + h - 4, 10, '#0b1014');
+  }
+
+  class UI {
+    constructor(game) {
+      this.game = game;
+      this.banner = null;
+      this.bannerT = 0;
+      this.cardRects = [];
+      this.hover = -1;
+      this.t = 0;
+    }
+
+    flashBanner(s, color) { this.banner = s; this.bannerColor = color || C.accent; this.bannerT = 2.2; }
+    update(dt) { this.t += dt; if (this.bannerT > 0) this.bannerT -= dt; }
+
+    /* --------------------------------------------------------------- HUD -- */
+    drawHud(ctx, view, game) {
+      const p = game.player, world = game.world;
+      const pad = 14;
+
+      // Top: both base HP bars (classic base-vs-base read).
+      const bw = 250, bh = 13;
+      const pb = world.playerBase, eb = world.enemyBase;
+      bar(ctx, pad, pad, bw, bh, pb.hp / pb.maxHp, pb.hp / pb.maxHp > .3 ? C.teamPlayer : C.hpLow, null);
+      text(ctx, `YOUR BASE  ${Math.ceil(pb.hp)}/${pb.maxHp}`, pad + 4, pad + bh + 14, 11, C.textDim);
+      const ex = view.w - pad - bw;
+      bar(ctx, ex, pad, bw, bh, eb.hp / eb.maxHp, C.teamEnemy, null);
+      text(ctx, `ENEMY BASE  ${Math.ceil(eb.hp)}/${eb.maxHp}`, view.w - pad - 4, pad + bh + 14, 11, C.textDim, 'right');
+
+      // Center top: run clock + wave.
+      text(ctx, U.formatTime(game.time), view.w / 2, pad + 12, 15, C.text, 'center');
+      text(ctx, 'WAVE ' + game.director.wave, view.w / 2, pad + 28, 10, C.textDim, 'center');
+
+      // Bottom-left: player vitals + weapon.
+      const by = view.h - pad;
+      if (p && !p.dead) {
+        bar(ctx, pad, by - 26, 210, 14, p.hp / p.maxHp, p.hp / p.maxHp > .35 ? C.hp : C.hpLow, null);
+        text(ctx, `HP ${Math.ceil(p.hp)}/${p.maxHp}`, pad + 5, by - 15, 11, '#0b1014');
+        const w = p.weapon;
+        const wl = p.weaponTime > 0 ? ` ${Math.ceil(p.weaponTime)}s` : '';
+        text(ctx, `${w.name.toUpperCase()}${wl}`, pad, by - 34, 13, p.weaponTime > 0 ? C.pickup : C.text);
+      } else if (game.respawnT > 0) {
+        text(ctx, `RESPAWN IN ${game.respawnT.toFixed(1)}s`, pad, by - 20, 14, C.teamEnemy);
+      }
+
+      // XP bar across the bottom.
+      const need = game.xpNeed, have = game.xp;
+      bar(ctx, pad, view.h - 8, view.w - pad * 2, 6, have / need, C.accent, 'rgba(0,0,0,.5)');
+      text(ctx, `LV ${game.level}`, view.w / 2, view.h - 12, 10, C.textDim, 'center');
+
+      // Stats block (bottom-center-left).
+      const s = world.stats;
+      text(ctx, `KILLS ${s.kills}   ACC ${s.shots ? Math.round((s.hits / s.shots) * 100) : 0}%   FRUIT ${s.fruit}`, pad, by - 52, 11, C.textDim);
+
+      // Auto-fire + aim mode chip.
+      const chip = (CFG.PLAYER.autoFire ? 'AUTO-FIRE ON' : 'AUTO-FIRE OFF') + '  [F]';
+      text(ctx, chip, view.w - pad, view.h - 34, 11, CFG.PLAYER.autoFire ? C.hp : C.textDim, 'right');
+      const aimMode = game.aimMode === 'mouse' ? 'MOUSE AIM' : 'AUTO AIM';
+      text(ctx, aimMode, view.w - pad, view.h - 20, 10, C.textDim, 'right');
+
+      if (this.bannerT > 0) {
+        const a = U.clamp(this.bannerT / 0.5, 0, 1);
+        ctx.globalAlpha = a;
+        text(ctx, this.banner, view.w / 2, view.h * 0.28, 30, this.bannerColor, 'center', '800');
+        ctx.globalAlpha = 1;
+      }
+
+      this.drawMinimapHint(ctx, view);
+    }
+
+    drawMinimapHint(ctx, view) {
+      text(ctx, 'MAP', view.w - 14 - 168, view.h - 14 - 8, 9, C.textDim, 'right');
+    }
+
+    /* ------------------------------------------------------------- menus -- */
+    dim(ctx, view, a) { ctx.fillStyle = `rgba(4,7,9,${a})`; ctx.fillRect(0, 0, view.w, view.h);
+    }
+
+    drawTitle(ctx, view, game) {
+      this.dim(ctx, view, 0.72);
+      const cx = view.w / 2;
+      text(ctx, 'W A R S', cx, view.h * 0.3, 62, C.text, 'center', '800');
+      text(ctx, 'two bases · one gun · a lot of fruit', cx, view.h * 0.3 + 30, 14, C.accent, 'center');
+
+      const lines = [
+        'WASD / ARROWS / LEFT STICK   move',
+        'MOUSE / RIGHT STICK          aim (auto-aim if you leave it alone)',
+        'AUTO-FIRE is ON              [F] to toggle, [SPACE] to shoot manually',
+        'SHIFT                        dash — brief i-frames, slip through the swarm',
+        'SHOOT TREES                  knock fruit loose, fruit heals you',
+        'GRAB CRATES                  temporary weapon upgrades',
+        'KILL ENEMIES                 XP -> level up -> pick a perk [1/2/3]',
+        'DESTROY THE ENEMY BASE       to win',
+      ];
+      lines.forEach((l, i) => text(ctx, l, cx, view.h * 0.48 + i * 19, 12, i % 2 ? C.textDim : C.text, 'center'));
+
+      const pulse = 0.55 + 0.45 * Math.sin(this.t * 4);
+      ctx.globalAlpha = pulse;
+      text(ctx, 'CLICK OR PRESS ENTER TO DEPLOY', cx, view.h * 0.88, 16, C.hp, 'center');
+      ctx.globalAlpha = 1;
+      text(ctx, 'P pause · R restart · M mute · ~ debug', cx, view.h * 0.94, 10, C.textDim, 'center');
+    }
+
+    drawPause(ctx, view) {
+      this.dim(ctx, view, 0.6);
+      const cx = view.w / 2;
+      text(ctx, 'PAUSED', cx, view.h * 0.42, 40, C.text, 'center', '800');
+      text(ctx, 'P to resume · R to restart · M ' + (game0(this).audio.muted ? 'unmuted' : 'muted'), cx, view.h * 0.52, 13, C.textDim, 'center');
+    }
+
+    drawLevelUp(ctx, view, cards, game) {
+      this.dim(ctx, view, 0.66);
+      text(ctx, `LEVEL ${game.level}`, view.w / 2, 90, 30, C.accent, 'center', '800');
+      text(ctx, 'pick a perk', view.w / 2, 112, 12, C.textDim, 'center');
+      const n = cards.length;
+      const cw = 210, chh = 150, gap = 22;
+      const total = n * cw + (n - 1) * gap;
+      let x = (view.w - total) / 2;
+      const y = view.h / 2 - chh / 2 + 10;
+      this.cardRects.length = 0;
+      cards.forEach((c, i) => {
+        const r = { x, y, w: cw, h: chh, index: i };
+        this.cardRects.push(r);
+        const hov = this.hover === i;
+        ctx.fillStyle = hov ? '#1b2a34' : '#131e25';
+        ctx.fillRect(x, y, cw, chh);
+        ctx.strokeStyle = hov ? C.accent : '#2b3a44';
+        ctx.lineWidth = hov ? 3 : 1.5;
+        ctx.strokeRect(x + .5, y + .5, cw - 1, chh - 1);
+        text(ctx, `[${i + 1}]`, x + 12, y + 24, 12, C.textDim);
+        text(ctx, c.name, x + 12, y + 48, 16, hov ? C.accent : C.text);
+        wrap(ctx, c.desc, x + 12, y + 72, cw - 24, 15, 12, C.textDim);
+        const owned = game.player.stacks[c.id] || 0;
+        text(ctx, owned ? `owned x${owned}` : '', x + 12, y + chh - 14, 10, C.textDim);
+        text(ctx, 'T' + c.tier, x + cw - 12, y + chh - 14, 10, c.tier > 2 ? C.pickup : C.textDim, 'right');
+        x += cw + gap;
+      });
+    }
+
+    drawGameOver(ctx, view, game, won) {
+      this.dim(ctx, view, 0.78);
+      const cx = view.w / 2;
+      text(ctx, won ? 'BASE DESTROYED — YOU WIN' : 'DEFEAT', cx, view.h * 0.36, 42, won ? C.hp : C.teamEnemy, 'center', '800');
+      const s = game.world.stats;
+      const rows = [
+        `time ${U.formatTime(game.time)}   wave ${game.director.wave}   level ${game.level}`,
+        `kills ${s.kills}   shots ${s.shots}   accuracy ${s.shots ? Math.round((s.hits / s.shots) * 100) : 0}%`,
+        `damage dealt ${Math.round(s.dmgDealt)}   damage taken ${Math.round(s.dmgTaken)}`,
+        `fruit eaten ${s.fruit}   crates ${s.crates}   trees felled ${s.trees}`,
+        `times down ${game.deaths}   enemy base left ${Math.ceil(game.world.enemyBase.hp)}`,
+      ];
+      rows.forEach((r, i) => text(ctx, r, cx, view.h * 0.48 + i * 22, 13, i ? C.textDim : C.text, 'center'));
+      const pulse = 0.5 + 0.5 * Math.sin(this.t * 4);
+      ctx.globalAlpha = pulse;
+      text(ctx, 'CLICK OR PRESS R FOR A NEW RUN', cx, view.h * 0.8, 16, C.accent, 'center');
+      ctx.globalAlpha = 1;
+    }
+
+    /** Mouse hover for cards, in logical view coords. */
+    hoverCards(input, view, active) {
+      this.hover = -1;
+      if (!active || !input.mouse.inside) return;
+      const vx = (input.mouse.x - view.offsetX) / view.scale;
+      const vy = (input.mouse.y - view.offsetY) / view.scale;
+      for (const r of this.cardRects) if (U.boxHit(r, vx, vy)) this.hover = r.index;
+    }
+    clickedCard(input) {
+      if (!input.mouse.left) return -1;
+      if (this.hover >= 0) { input.mouse.left = false; return this.hover; }
+      return -1;
+    }
+  }
+
+  function wrap(ctx, s, x, y, maxW, lh, size, color) {
+    ctx.font = `600 ${size}px ${FONT}`;
+    ctx.fillStyle = color;
+    ctx.textAlign = 'left';
+    const words = s.split(' ');
+    let line = '';
+    for (const wd of words) {
+      const test = line ? line + ' ' + wd : wd;
+      if (ctx.measureText(test).width > maxW && line) {
+        ctx.fillText(line, x, y); y += lh; line = wd;
+      } else line = test;
+    }
+    if (line) ctx.fillText(line, x, y);
+  }
+
+  function game0(ui) { return ui.game; }
+
+  W.UI = UI;
+  W.UIHelpers = { text, bar, wrap };
+})(window.WARS || (window.WARS = {}));
