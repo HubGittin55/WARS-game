@@ -23,25 +23,32 @@
       this.kills = 0;
     }
 
-    /** Global difficulty scalar: 1.0 at t=0, ~2.0 at 2min, ~3.0 at 4min. */
-    get difficulty() { return 1 + this.time / 120; }
+    /** Selected difficulty mode (Config.MODES); defaults to the config default. */
+    get m() { return this.game.world ? this.game.world.modeCfg : CFG.MODES[CFG.MODE_DEFAULT]; }
+
+    /** Global difficulty scalar: classic curve 1.0 at t=0 -> ~2.5 at 5min,
+        then scaled by the mode (easy stays gentle, hacker escalates hard). */
+    get difficulty() { return 1 + Math.min(this.time / 120, 2.5) * this.m.diff; }
 
     /** How many enemies we allow on the field right now — the real pressure knob. */
     get aliveCap() {
       const D = CFG.DIRECTOR;
-      return Math.min(D.aliveCapMax, D.aliveCapBase + (this.time / 60) * D.aliveCapPerMin);
+      const cap = Math.min(D.aliveCapMax, D.aliveCapBase + (this.time / 60) * D.aliveCapPerMin);
+      return cap * this.m.cap;
     }
 
     /** Early on enemies march from their base where you can see them coming; later
         they also drop in just off-camera, which is the bullet-heaven half. */
     get ringChance() {
       const D = CFG.DIRECTOR;
-      return U.clamp(D.ringChance + (this.time / 180) * (D.ringChanceLate - D.ringChance), D.ringChance, D.ringChanceLate);
+      const base = U.clamp(D.ringChance + (this.time / 180) * (D.ringChanceLate - D.ringChance), D.ringChance, D.ringChanceLate);
+      return U.clamp(base * this.m.ring, 0, 1);
     }
 
-    /** Type pool unlocks over time so the first 20s feel learnable. */
+    /** Type pool unlocks over time so the first 20s feel learnable.
+        Easy modes unlock slower; hacker modes unlock faster. */
     pickType(rng) {
-      const t = this.time;
+      const t = this.time * this.m.ring;
       const pool = [['grunt', 10]];
       if (t > 25) pool.push(['runner', 5]);
       if (t > 50) pool.push(['gunner', 5]);
@@ -67,13 +74,14 @@
 
     spawnBot(type, opts) {
       const world = this.game.world;
-      const alive = world.fighters.reduce((n, f) => n + (!f.dead && !f.isPlayer ? 1 : 0), 0);
+      // Only hostile bots count against the cap — your squad never squeezes the enemy out.
+      const alive = world.fighters.reduce((n, f) => n + (!f.dead && !f.isPlayer && f.team === T.ENEMY ? 1 : 0), 0);
       if (alive >= Math.floor(this.aliveCap) || alive >= CFG.BOT.maxAlive) return null;
       const p = this.spawnPoint(world);
-      const cfg = W.AI.spawnConfig(type || this.pickType(world.rng), p.x, p.y, T.ENEMY, this.difficulty);
+      const cfg = W.AI.spawnConfig(type || this.pickType(world.rng), p.x, p.y, T.ENEMY, this.difficulty, this.m);
       const f = world.addFighter(cfg);
       if (opts && opts.elite) {
-        f.maxHp *= 2.2; f.hp = f.maxHp; f.r *= 1.25; f.xpValue *= 3;
+        f.maxHp *= 2.2 * this.m.eliteHp; f.hp = f.maxHp; f.r *= 1.25; f.xpValue *= 3 * (this.m.xp || 1);
         f.type = 'brute';
       }
       this.spawned++;
@@ -88,14 +96,14 @@
       this.time += dt;
       world.difficulty = this.difficulty;   // read by AI / world for gentle early scaling
 
-      const alive = world.fighters.reduce((n, f) => n + (!f.dead && !f.isPlayer ? 1 : 0), 0);
+      const alive = world.fighters.reduce((n, f) => n + (!f.dead && !f.isPlayer && f.team === T.ENEMY ? 1 : 0), 0);
 
       // --- waves: a burst of bots all at once ---------------------------
       this.waveT -= dt;
       if (this.waveT <= 0) {
         this.wave++;
-        this.waveT = Math.max(9, CFG.DIRECTOR.waveEvery - this.time * 0.02);
-        const n = Math.round(CFG.DIRECTOR.waveSizeBase + this.wave * CFG.DIRECTOR.waveSizeGrowth);
+        this.waveT = Math.max(9, (CFG.DIRECTOR.waveEvery - this.time * 0.02) / this.m.spawn);
+        const n = Math.round((CFG.DIRECTOR.waveSizeBase + this.wave * CFG.DIRECTOR.waveSizeGrowth) * this.m.spawn);
         for (let i = 0; i < n; i++) this.spawnBot();
         this.game.ui?.flashBanner?.('WAVE ' + this.wave, CFG.COLORS.teamEnemy);
       }
@@ -106,7 +114,7 @@
         // Only rush the player when the arena has already been cleared, so the
         // field never piles up beyond the aliveCap ramp.
         const boost = alive < CFG.DIRECTOR.capSoft ? 2 : 1;
-        this.trickleT = Math.max(0.8, CFG.DIRECTOR.trickleEvery / (boost * (1 + this.time / 240)));
+        this.trickleT = Math.max(0.8, CFG.DIRECTOR.trickleEvery / (boost * (1 + this.time / 240)) / this.m.spawn);
         const count = CFG.DIRECTOR.trickleBase + Math.floor(this.time / 120);
         for (let i = 0; i < count; i++) this.spawnBot();
       }
@@ -114,7 +122,7 @@
       // --- elites -------------------------------------------------------
       this.eliteT -= dt;
       if (this.eliteT <= 0) {
-        this.eliteT = CFG.DIRECTOR.eliteEvery;
+        this.eliteT = CFG.DIRECTOR.eliteEvery / this.m.elite;
         this.spawnBot('brute', { elite: true });
         this.game.ui?.flashBanner?.('ELITE INBOUND', '#ffb066');
       }

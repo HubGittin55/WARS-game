@@ -38,6 +38,45 @@
     resize();
 
     /* ------------------------------------------------------ hotkeys ------ */
+    /** Cycle / jump to a difficulty mode (title, pause, or game-over screen).
+        The pick persists in localStorage and applies to the next run. */
+    function changeMode(delta, absolute) {
+      const order = CFG.MODE_ORDER;
+      let idx = order.indexOf(game.mode);
+      if (idx < 0) idx = order.indexOf(CFG.MODE_DEFAULT);
+      idx = absolute === undefined ? U.clamp(idx + delta, 0, order.length - 1) : U.clamp(absolute, 0, order.length - 1);
+      if (order[idx] !== game.mode) {
+        game.setMode(order[idx]);
+        game.ui.flashBanner('MODE ' + CFG.MODES[order[idx]].label, CFG.COLORS.accent);
+        game.audio.play('pickup', { vol: 0.5 });
+      }
+    }
+    function tryModeKeys() {
+      if (input.consume('modeLeft')) changeMode(-1);
+      else if (input.consume('modeRight')) changeMode(1);
+      else {
+        for (let i = 0; i < 5; i++) {
+          if (input.consume('mode' + (i + 1))) { changeMode(undefined, i); break; }
+        }
+      }
+    }
+
+    /** Cycle / jump to a map (title screen only — the world is rebuilt on deploy). */
+    function changeLevel(delta, absolute) {
+      const order = CFG.LEVELS.map((l) => l.id);
+      let idx = order.indexOf(game.levelId);
+      if (idx < 0) idx = 0;
+      idx = absolute === undefined ? (idx + delta + order.length) % order.length : U.clamp(absolute, 0, order.length - 1);
+      if (order[idx] !== game.levelId) {
+        game.setLevel(order[idx]);
+        game.audio.play('pickup', { vol: 0.6 });
+      }
+    }
+    function tryLevelKeys() {
+      if (input.consume('levelLeft')) changeLevel(-1);
+      else if (input.consume('levelRight')) changeLevel(1);
+    }
+
     function hotkeys() {
       if (input.consume('mute')) game.audio.setMuted(!game.audio.muted);
       if (input.consume('toggleAuto')) {
@@ -52,12 +91,15 @@
 
       switch (game.state) {
         case 'title':
+          tryModeKeys();
+          tryLevelKeys();
           if (input.consume('start')) game.start();
           break;
         case 'playing':
           if (input.consume('pause')) game.state = 'paused';
           break;
         case 'paused':
+          tryModeKeys();
           if (input.consume('pause') || input.consume('start')) game.state = 'playing';
           break;
         case 'levelup': {
@@ -68,6 +110,7 @@
           break;
         }
         case 'won': case 'lost':
+          tryModeKeys();
           if (input.consume('start')) game.restart();
           break;
       }
@@ -75,11 +118,24 @@
 
     function takeCard(i) { game.takeCard(i); }
 
-    // Clicks: deploy / restart / pick a card.
+    // Clicks: pick a map chip / deploy / restart / pick a card.
+    function viewPoint(clientX, clientY) {
+      const r = canvas.getBoundingClientRect();
+      return {
+        vx: (clientX - r.left - view.offsetX) / view.scale,
+        vy: (clientY - r.top - view.offsetY) / view.scale,
+      };
+    }
     canvas.addEventListener('mousedown', (e) => {
       game.audio.unlock();
       if (e.button !== 0) return;
-      if (game.state === 'title') { game.start(); return; }
+      if (game.state === 'title') {
+        const pt = viewPoint(e.clientX, e.clientY);
+        const lvRect = (game.ui.levelRects || []).find((r2) => U.boxHit(r2, pt.vx, pt.vy));
+        if (lvRect) { game.setLevel(lvRect.id); game.audio.play('pickup', { vol: 0.6 }); return; }
+        game.start();
+        return;
+      }
       if (game.state === 'won' || game.state === 'lost') { game.restart(); return; }
       if (game.state === 'levelup' && game.ui.hover >= 0) takeCard(game.ui.hover);
     });
@@ -91,6 +147,11 @@
         const r = canvas.getBoundingClientRect();
         input.mouse.x = t.clientX - r.left; input.mouse.y = t.clientY - r.top;
         input.mouse.inside = true;
+        if (game.state === 'title') {
+          const pt = viewPoint(t.clientX, t.clientY);
+          const lvRect = (game.ui.levelRects || []).find((r2) => U.boxHit(r2, pt.vx, pt.vy));
+          if (lvRect) { game.setLevel(lvRect.id); game.audio.play('pickup', { vol: 0.6 }); return; }
+        }
       }
       if (game.state === 'title') game.start();
       else if (game.state === 'won' || game.state === 'lost') game.restart();

@@ -75,6 +75,23 @@
         ctx.globalAlpha = 1;
       }
 
+      // tank tread marks (faint, fade out over their life)
+      for (const tr of world.tracks) {
+        if (!cam.visible(tr.x, tr.y, 30)) continue;
+        const al = U.clamp(tr.t / 14, 0, 1) * 0.32;
+        const ca = Math.cos(tr.a), sa = Math.sin(tr.a);
+        ctx.globalAlpha = al;
+        ctx.strokeStyle = '#0e1318';
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.moveTo(tr.x - sa * 8 - ca * 5, tr.y + ca * 8 - sa * 5);
+        ctx.lineTo(tr.x - sa * 8 + ca * 5, tr.y + ca * 8 + sa * 5);
+        ctx.moveTo(tr.x + sa * 8 - ca * 5, tr.y - ca * 8 - sa * 5);
+        ctx.lineTo(tr.x + sa * 8 + ca * 5, tr.y - ca * 8 + sa * 5);
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
+
       // arena walls
       const p = CFG.WORLD.PAD;
       ctx.strokeStyle = C.wall; ctx.lineWidth = p * 2;
@@ -91,15 +108,22 @@
 
     /* ---------------------------------------------------------- entities -- */
     drawWorld(ctx, world, cam, game) {
+      // Ground layer: blood decals linger beneath everything, corpses under fighters.
+      for (const g of world.gore) if (cam.visible(g.x, g.y, g.r + 12)) g.draw(ctx);
       for (const fr of world.fruits) if (cam.visible(fr.x, fr.y)) fr.draw(ctx);
       for (const p of world.pickups) if (cam.visible(p.x, p.y)) p.draw(ctx);
       for (const b of world.bases) if (b.alive && cam.visible(b.x, b.y, 140)) b.draw(ctx);
       for (const p of world.particles) if (cam.visible(p.x, p.y)) p.draw(ctx);
+      for (const c of world.corpses) if (cam.visible(c.x, c.y, 30)) c.draw(ctx);
+      world.drawShockwaves(ctx);
 
       // Fighters, painted back-to-front so lower bodies overlap upper ones.
       const fs = world.fighters.filter((f) => !f.dead && cam.visible(f.x, f.y, 40));
       fs.sort((a, b) => a.y - b.y);
       for (const f of fs) f.draw(ctx, game);
+
+      // Tanks sit on the ground but under the canopies.
+      for (const tk of world.tanks) if (tk.alive && cam.visible(tk.x, tk.y, 60)) tk.draw(ctx);
 
       // Canopies last so they read as cover you can hide behind.
       for (const t of world.trees) {
@@ -149,6 +173,7 @@
         dot(f.x, f.y, f.team === CFG.TEAM.PLAYER ? C.teamPlayer : C.teamEnemy, f.isPlayer ? 4 : 2);
       }
       for (const b of world.bases) if (b.alive) dot(b.x, b.y, b.team === CFG.TEAM.PLAYER ? C.teamPlayer : C.teamEnemy, 7);
+      for (const tk of world.tanks) if (tk.alive) dot(tk.x, tk.y, tk.team === CFG.TEAM.PLAYER ? C.accent : C.hpLow, 4);
       for (const p of world.pickups) dot(p.x, p.y, C.pickup, 3);
       for (const fr of world.fruits) dot(fr.x, fr.y, C.fruit, 2);
 

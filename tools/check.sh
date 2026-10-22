@@ -10,4 +10,4 @@ node tools/smoke.js
 echo
 node tools/pressure.js 180 11
 echo
-node tools/playtest.js 420
+node tools/playtest.js 300

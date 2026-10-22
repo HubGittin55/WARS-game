@@ -6,16 +6,19 @@
   const U = W.Util;
   const CFG = W.Config;
   const T = CFG.TEAM;
+  const C = CFG.COLORS;
 
   class World {
     constructor(game) {
       this.game = game;
+      this.mode = CFG.MODE_DEFAULT;   // set by Game before build()
       this.rng = U.makeRng(1337);
       this.w = CFG.WORLD.W;
       this.h = CFG.WORLD.H;
       this.time = 0;
       this.bullets = [];
       this.fighters = [];
+      this.tanks = [];
       this.trees = [];
       this.fruits = [];
       this.pickups = [];
@@ -23,6 +26,11 @@
       this.texts = [];
       this.bases = [];
       this.decor = [];
+      this.gore = [];        // blood / scorch decals (ground, oldest first)
+      this.corpses = [];
+      this.tracks = [];      // tank tread marks
+      this.rings = [];       // expanding shockwave rings
+      this.levelId = CFG.LEVELS[0].id;   // set by Game before build()
       this.grid = new Map();
       this.difficulty = 1;      // set each frame by the Director
       this.time = 0;            // world clock (seconds simulated)
@@ -33,7 +41,10 @@
       this.onKill = null; this.onHit = null; this.onShot = null;
       this.onTreeDestroyed = null; this.onBaseDestroyed = null; this.onBaseHit = null;
       this.onPickup = null; this.onFruit = null; this.onExplosion = null;
+      this.onTankDestroyed = null;
     }
+
+    get modeCfg() { return CFG.MODES[this.mode] || CFG.MODES[CFG.MODE_DEFAULT]; }
 
     /* --------------------------------------------------------- factories -- */
     addBullet(o) {
@@ -100,38 +111,131 @@
       return f;
     }
 
+    addTank(o) {
+      if (this.tanks.length >= CFG.TANK.max) return null;
+      const t = new W.Tank(o);
+      this.tanks.push(t);
+      return t;
+    }
+
+    /** Tank tread mark: a short dark segment the tank leaves as it rolls. */
+    addTrack(x, y, a) {
+      if (this.tracks.length >= 160) this.tracks.shift();
+      this.tracks.push({ x, y, a, life: 14, t: 14 });
+    }
+
+    /* ------------------------------------------------- gore & violence --- */
+    /** Blood splash + splat decal + tumbling chunks. `power` scales it all. */
+    goreBurst(x, y, team, power) {
+      power = power || 1;
+      const blood = team === T.PLAYER ? C.bloodPlayer : C.bloodEnemy;
+      if (this.gore.length < CFG.WORLD.MAX_GORE) {
+        const segs = [];
+        const n = Math.min(4 + Math.floor(power * 3), 9);
+        for (let i = 0; i < n; i++) {
+          const a = Math.random() * U.TAU;
+          const d = Math.random() * 14 * power;
+          segs.push({
+            dx: Math.cos(a) * d,
+            dy: Math.sin(a) * d * 0.8,
+            r: 2.5 + Math.random() * 5 * power,
+            rot: Math.random() * Math.PI,
+          });
+        }
+        this.gore.push(new W.Decal({
+          x, y, segs,
+          color: Math.random() < 0.6 ? blood : C.bloodDark,
+          life: CFG.GORE.decalLife,
+        }));
+      }
+      const chunks = Math.min(12, Math.floor(4 + power * 3));
+      for (let i = 0; i < chunks; i++) {
+        const a = Math.random() * U.TAU;
+        const sp = 60 + Math.random() * 160 * power;
+        this.addParticle(x, y, {
+          vx: Math.cos(a) * sp,
+          vy: Math.sin(a) * sp - 60 * power,   // upward kick; gravity brings it down
+          life: 0.3 + Math.random() * 0.4,
+          r: CFG.GORE.chunkMin + Math.random() * (CFG.GORE.chunkMax - CFG.GORE.chunkMin) * power,
+          color: Math.random() < 0.7 ? blood : C.bloodDark,
+          rect: true, grav: true,
+          rot: Math.random() * Math.PI,
+          vr: (Math.random() - 0.5) * 18,
+          drag: 1.4,
+        });
+      }
+    }
+
+    /** A body that stays on the field a few seconds, then fades. */
+    spawnCorpse(f) {
+      if (this.corpses.length >= CFG.WORLD.MAX_CORPSES) this.corpses.shift();
+      this.corpses.push(new W.Corpse({
+        x: f.x, y: f.y, r: f.r,
+        rot: f.aim || 0,
+        bodyColor: f.team === T.PLAYER ? C.teamPlayer : C.teamEnemy,
+        bloodColor: f.team === T.PLAYER ? C.bloodPlayer : C.bloodEnemy,
+      }));
+    }
+
+    /** A charred scorch mark left by an explosion. */
+    addScorch(x, y, r) {
+      if (this.gore.length >= CFG.WORLD.MAX_GORE) return;
+      const segs = [];
+      for (let i = 0; i < 3; i++) {
+        segs.push({
+          dx: (Math.random() - 0.5) * r * 0.6,
+          dy: (Math.random() - 0.5) * r * 0.6,
+          r: r * (0.45 + Math.random() * 0.4),
+          rot: Math.random() * Math.PI,
+        });
+      }
+      this.gore.push(new W.Decal({ x, y, segs, color: C.scorch, kind: 'scorch', life: CFG.GORE.decalLife * 1.3 }));
+    }
+
+    /** Expanding ring — the visible pressure wave of an explosion. */
+    addShockwave(x, y, maxR, color) {
+      if (this.rings.length < 24) this.rings.push({ x, y, maxR, color: color || C.fire, t: 0.55, life: 0.55 });
+    }
+
+    updateShockwaves(dt) {
+      for (const r of this.rings) r.t -= dt;
+      for (let i = this.rings.length - 1; i >= 0; i--) if (this.rings[i].t <= 0) this.rings.splice(i, 1);
+    }
+
+    drawShockwaves(ctx) {
+      for (const r of this.rings) {
+        const k = 1 - r.t / r.life;              // 0 -> 1 over the life
+        const ease = 1 - (1 - k) * (1 - k);
+        ctx.globalAlpha = (1 - ease) * 0.55;
+        ctx.strokeStyle = r.color;
+        ctx.lineWidth = 3 + (1 - ease) * 5;
+        ctx.beginPath();
+        ctx.arc(r.x, r.y, 8 + (r.maxR - 8) * ease, 0, U.TAU);
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+    }
+
     /* ------------------------------------------------------- map layout -- */
     build(seed) {
       this.rng = U.makeRng(seed);
       const rng = this.rng;
-      this.bullets.length = this.fighters.length = this.trees.length = 0;
+      this.bullets.length = this.fighters.length = this.trees.length = this.tanks.length = 0;
       this.fruits.length = this.pickups.length = this.particles.length = this.texts.length = 0;
       this.bases.length = 0; this.decor.length = 0;
+      this.gore.length = 0; this.corpses.length = 0; this.rings.length = 0; this.tracks.length = 0;
       this.time = 0; this.fruitStamps.length = 0;
       this.difficulty = 1;
       this.stats = { shots: 0, hits: 0, kills: 0, fruit: 0, trees: 0, crates: 0, dmgDealt: 0, dmgTaken: 0, dmgShot: 0, dmgBody: 0 };
 
       const pad = 200;
-      this.playerBase = new W.Base({ team: T.PLAYER, x: pad + CFG.BASE.half, y: this.h - pad - CFG.BASE.half });
-      this.enemyBase = new W.Base({ team: T.ENEMY, x: this.w - pad - CFG.BASE.half, y: pad + CFG.BASE.half });
+      const baseHp = Math.round(CFG.BASE.hp * this.modeCfg.baseHp);
+      this.playerBase = new W.Base({ team: T.PLAYER, x: pad + CFG.BASE.half, y: this.h - pad - CFG.BASE.half, hp: baseHp });
+      this.enemyBase = new W.Base({ team: T.ENEMY, x: this.w - pad - CFG.BASE.half, y: pad + CFG.BASE.half, hp: baseHp });
       this.bases.push(this.playerBase, this.enemyBase);
 
-      // Trees: scattered, but never on top of a base or in a tight clump.
-      const minGap = 78;
-      let guard = 0;
-      while (this.trees.length < CFG.TREE.count && guard++ < CFG.TREE.count * 60) {
-        const x = rng.range(60, this.w - 60), y = rng.range(60, this.h - 60);
-        if (U.dist2(x, y, this.playerBase.x, this.playerBase.y) < 300 * 300) continue;
-        if (U.dist2(x, y, this.enemyBase.x, this.enemyBase.y) < 300 * 300) continue;
-        let ok = true;
-        for (const t of this.trees) if (U.dist2(x, y, t.x, t.y) < minGap * minGap) { ok = false; break; }
-        if (!ok) continue;
-        this.trees.push(new W.Tree({
-          x, y,
-          r: CFG.TREE.canopyR + rng.range(-CFG.TREE.canopyRVar, CFG.TREE.canopyRVar),
-          fruitMax: rng.weighted([[3, 3], [4, 5], [5, 2]]),
-        }));
-      }
+      // Trees: the chosen map pattern (Config.LEVELS). Never on a base.
+      this._placeTrees(rng);
 
       // Static ground decor (purely visual, seeded so it is stable per run).
       for (let i = 0; i < 220; i++) {
@@ -141,6 +245,90 @@
         });
       }
       return this;
+    }
+
+    /** Place the treeline for the selected map pattern (scatter / ring / lanes /
+        forest / quarters). Bases stay clear; near-overlaps get thinned out. */
+    _placeTrees(rng) {
+      const lv = CFG.LEVELS.find((l) => l.id === this.levelId) || CFG.LEVELS[0];
+      const n = lv.trees || CFG.TREE.count;
+      const cx = this.w / 2, cy = this.h / 2;
+      const baseKeep = 300 * 300;
+      const add = (x, y) => {
+        x = U.clamp(x, 60, this.w - 60);
+        y = U.clamp(y, 60, this.h - 60);
+        if (U.dist2(x, y, this.playerBase.x, this.playerBase.y) < baseKeep) return;
+        if (U.dist2(x, y, this.enemyBase.x, this.enemyBase.y) < baseKeep) return;
+        this.trees.push(new W.Tree({
+          x, y,
+          r: CFG.TREE.canopyR + rng.range(-CFG.TREE.canopyRVar, CFG.TREE.canopyRVar),
+          fruitMax: rng.weighted([[3, 3], [4, 5], [5, 2]]),
+        }));
+      };
+      const pat = lv.pattern;
+      if (pat === 'ring') {
+        const radii = [240, 330, 420];
+        for (let i = 0; i < n; i++) {
+          const a = rng.angle();
+          const r = radii[i % radii.length] + rng.range(-26, 26);
+          add(cx + Math.cos(a) * r, cy + Math.sin(a) * r * 0.72);  // elliptical: arena is wider than tall
+        }
+      } else if (pat === 'lanes') {
+        const lines = [cx - 330, cx, cx + 330];
+        for (let i = 0; i < n; i++) {
+          const x = lines[i % lines.length] + rng.range(-42, 42);
+          add(x, rng.range(90, this.h - 90));
+        }
+      } else if (pat === 'forest') {
+        const cs = [];
+        for (let i = 0; i < 6; i++) cs.push({ x: rng.range(180, this.w - 180), y: rng.range(180, this.h - 180) });
+        for (let i = 0; i < n; i++) {
+          if (i < n * 0.65) { const c = cs[i % cs.length]; add(c.x + rng.range(-180, 180), c.y + rng.range(-180, 180)); }
+          else add(rng.range(60, this.w - 60), rng.range(60, this.h - 60));
+        }
+      } else if (pat === 'quarters') {
+        const qs = [[cx - 330, cy - 300], [cx + 330, cy - 300], [cx - 330, cy + 300], [cx + 330, cy + 300]];
+        for (let i = 0; i < n; i++) {
+          const q = qs[i % 4];
+          add(q[0] + rng.range(-130, 130), q[1] + rng.range(-130, 130));
+        }
+      } else {  // scatter (classic)
+        const minGap = 78;
+        let guard = 0;
+        while (this.trees.length < n && guard++ < n * 60) {
+          const x = rng.range(60, this.w - 60), y = rng.range(60, this.h - 60);
+          if (U.dist2(x, y, this.playerBase.x, this.playerBase.y) < baseKeep) continue;
+          if (U.dist2(x, y, this.enemyBase.x, this.enemyBase.y) < baseKeep) continue;
+          let ok = true;
+          for (const t of this.trees) if (U.dist2(x, y, t.x, t.y) < minGap * minGap) { ok = false; break; }
+          if (!ok) continue;
+          add(x, y);
+        }
+      }
+      // thin near-overlaps left by the pattern generators
+      const minD2 = 42 * 42;
+      for (let i = this.trees.length - 1; i >= 0; i--) {
+        for (let j = 0; j < i; j++) {
+          if (U.dist2(this.trees[i].x, this.trees[i].y, this.trees[j].x, this.trees[j].y) < minD2) {
+            this.trees.splice(i, 1);
+            break;
+          }
+        }
+      }
+      // top up to the target count so each map delivers its advertised density
+      {
+        const minGap = 46;
+        let guard = 0;
+        while (this.trees.length < n && guard++ < (n - this.trees.length) * 400 + 200) {
+          const x = rng.range(60, this.w - 60), y = rng.range(60, this.h - 60);
+          if (U.dist2(x, y, this.playerBase.x, this.playerBase.y) < baseKeep) continue;
+          if (U.dist2(x, y, this.enemyBase.x, this.enemyBase.y) < baseKeep) continue;
+          let ok = true;
+          for (const t of this.trees) if (U.dist2(x, y, t.x, t.y) < minGap * minGap) { ok = false; break; }
+          if (!ok) continue;
+          add(x, y);
+        }
+      }
     }
 
     /** Find a walkable spot near (x,y) that is clear of trees/bases. */
@@ -177,6 +365,12 @@
         const d = U.dist2(from.x, from.y, f.x, f.y);
         if (d < bestD) { bestD = d; best = f; }
       }
+      // Tanks are targetable too (bots and base turrets can shoot at them).
+      for (const tk of this.tanks) {
+        if (tk.dead || tk.team === team) continue;
+        const d = U.dist2(from.x, from.y, tk.x, tk.y);
+        if (d < bestD) { bestD = d; best = tk; }
+      }
       return best;
     }
 
@@ -207,6 +401,7 @@
         }
       };
       for (const f of this.fighters) if (!f.dead) put(f, 'fighter');
+      for (const tk of this.tanks) if (!tk.dead) put(tk, 'tank');
       for (const b of this.bases) if (b.alive) put(b, 'base');
       for (const t of this.trees) if (t.blocksBullet) put(t, 'tree');
     }
@@ -238,6 +433,17 @@
       for (const p of this.particles) p.update(dt);
       for (const t of this.texts) t.update(dt);
       for (const b of this.bullets) b.update(dt);
+      for (const g of this.gore) g.update(dt);
+      for (const c of this.corpses) c.update(dt);
+      // tanks: run, then score any that died this frame (the explosion is the game's call)
+      for (const tk of this.tanks) {
+        if (!tk.dead) tk.update(dt, this);
+        else if (!tk.scored) { tk.scored = true; this.onTankDestroyed?.(tk); }
+      }
+      for (let i = this.tanks.length - 1; i >= 0; i--) if (this.tanks[i].dead) this.tanks.splice(i, 1);
+      for (const tr of this.tracks) tr.t -= dt;
+      for (let i = this.tracks.length - 1; i >= 0; i--) if (this.tracks[i].t <= 0) this.tracks.splice(i, 1);
+      this.updateShockwaves(dt);
 
       this._rebuildGrid();
       this._resolveMovement();
@@ -284,6 +490,18 @@
           this._pushOut(f, t.x, t.y, t.r * 0.72 + f.r);
         }
       }
+      // tanks: same solids, but they are vehicles — trees bend, they do not
+      for (const tk of this.tanks) {
+        if (tk.dead) continue;
+        tk.x = U.clamp(tk.x, pad + tk.r * 0.8, this.w - pad - tk.r * 0.8);
+        tk.y = U.clamp(tk.y, pad + tk.r * 0.8, this.h - pad - tk.r * 0.8);
+        for (const b of this.bases) if (b.alive && b.team !== tk.team) this._pushOut(tk, b.x, b.y, b.r + tk.r * 0.8);
+        for (const t of this.trees) {
+          if (!t.blocksMove) continue;
+          if (U.dist2(tk.x, tk.y, t.x, t.y) > 40000) continue;
+          this._pushOut(tk, t.x, t.y, t.r * 0.6 + tk.r * 0.8);
+        }
+      }
       // fighter-vs-fighter separation (cheap single pass, twice for stability)
       const fs = this.fighters;
       for (let pass = 0; pass < 2; pass++) {
@@ -314,14 +532,14 @@
         // tunnel through thin targets at 60Hz.
         const near = this.query(mx, my, b.r + travel / 2 + 2);
         for (const e of near) {
-          const isBase = e instanceof W.Base, isTree = e instanceof W.Tree;
+          const isBase = e instanceof W.Base, isTree = e instanceof W.Tree, isTank = e instanceof W.Tank;
           if (isBase) { if (e.team === b.team || !e.alive) continue; }
           else if (isTree) { if (!e.blocksBullet || e.dead) continue; }
           else if (e.team === b.team || e.dead) continue;
           const er = isBase ? e.r : isTree ? e.r * 0.8 : e.r;
           if (U.segDist2(e.x, e.y, b.px, b.py, b.x, b.y) > (b.r + er) * (b.r + er)) continue;
           const hit = U.segClosest(e.x, e.y, b.px, b.py, b.x, b.y);
-          this._bulletImpact(b, e, isBase ? 'base' : isTree ? 'tree' : 'fighter', hit);
+          this._bulletImpact(b, e, isBase ? 'base' : isTree ? 'tree' : isTank ? 'tank' : 'fighter', hit);
           break;
         }
         // world bounds
@@ -354,6 +572,12 @@
         const dealt = e.hurt(b.dmg, this, b.team);
         if (dealt > 0 && b.fromPlayer) this.stats.dmgDealt += dealt;
         this.burst(hx, hy, 5, { color: '#ffd08a', spMin: 40, spMax: 170, lifeMin: .12, lifeMax: .32 });
+      } else if (kind === 'tank') {
+        const dealt = e.hurt(b.dmg, this, b.team);
+        if (dealt > 0) {
+          if (b.fromPlayer) this.stats.dmgDealt += dealt;
+          this.burst(hx, hy, 3, { color: '#ffd08a', spMin: 30, spMax: 130, lifeMin: .1, lifeMax: .25, rMin: 1, rMax: 2.5 });
+        }
       }
 
       // splash
@@ -384,6 +608,13 @@
       for (const b of this.bases) {
         if (b.team === team || !b.alive) continue;
         if (U.dist(x, y, b.x, b.y) < radius + b.r) b.hurt(dmg * 0.6, this, team);
+      }
+      for (const tk of this.tanks) {
+        if (tk.dead || tk.team === team) continue;
+        const d = U.dist(x, y, tk.x, tk.y);
+        if (d > radius + tk.r) continue;
+        const falloff = U.clamp(1 - d / radius, 0.25, 1);
+        tk.hurt(dmg * falloff, this, team);
       }
       for (const t of this.trees) if (!t.dead && U.dist(x, y, t.x, t.y) < radius + t.r) t.hit(dmg * 0.4, this, this.rng);
       this.onExplosion?.(x, y, radius, src);
@@ -459,6 +690,7 @@
       const cull = (arr) => { for (let i = arr.length - 1; i >= 0; i--) if (arr[i].dead) arr.splice(i, 1); };
       cull(this.bullets); cull(this.particles); cull(this.texts);
       cull(this.fruits); cull(this.pickups);
+      cull(this.gore); cull(this.corpses);
       // Dead fighters are kept one frame for game.js to score, then removed.
       for (let i = this.fighters.length - 1; i >= 0; i--) {
         const f = this.fighters[i];

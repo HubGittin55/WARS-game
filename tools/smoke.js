@@ -161,7 +161,7 @@ console.log('\n== swept bullet collision ==');
 {
   const g3 = new W.Game({ seed: 31 });
   g3.state = 'playing';
-  const victim = g3.world.fighters.find((f) => !f.isPlayer) ||
+  const victim = g3.world.fighters.find((f) => !f.isPlayer && f.team === 1) ||
     g3.world.addFighter({ team: 1, x: g3.player.x + 300, y: g3.player.y, type: 'grunt' });
   victim.iframes = 0; victim.spawnGuard = 0;
   const hp0 = victim.hp;
@@ -259,6 +259,105 @@ fruit.x = g2.player.x; fruit.y = g2.player.y;
 g2.state = 'playing';
 g2.world.update(DT);
 ok(g2.player.hp > healBefore - 40, 'touching fruit healed the player');
+
+/* ------------------------------------------------------- squad & tanks ---- */
+console.log('\n== squad & tanks ==');
+{
+  const g6 = new W.Game({ seed: 5 });
+  g6.state = 'playing';
+  const S = W.Config.SQUAD;
+  ok(g6.squad.length === S.start, `start squad of ${S.start} deployed`);
+  ok(g6.squad.every((f) => f && f.team === 0 && f.type === 'soldier' && !f.dead), 'soldiers are live player-team fighters');
+
+  const f0 = g6.squad[0];
+  const d0 = f0.dmgMul;
+  g6.bumpSquad('dmg');
+  ok(f0.dmgMul > d0, `squad damage tier applied to live soldiers (${d0} -> ${f0.dmgMul})`);
+
+  g6._recruit();
+  ok(g6.squad.length === S.start + 1, 'reinforcements recruit a third soldier');
+
+  for (let i = 0; i < 180; i++) g6.world.update(1 / 60);
+  ok(g6.squad.every((f) => Number.isFinite(f.x) && Number.isFinite(f.y)), 'soldier positions stayed finite after 3s of AI');
+
+  // tank card: hidden below unlock level, offered at it, deploys, fires, explodes
+  ok(!W.Upgrades.roll(g6.player, 99, g6.world.rng, g6).includes(W.Upgrades.byId('tank')), 'tank card hidden below unlock level');
+  g6.level = W.Config.TANK.unlockLevel;
+  ok(W.Upgrades.roll(g6.player, 99, g6.world.rng, g6).includes(W.Upgrades.byId('tank')), 'tank card offered at unlock level');
+  ok(g6.deployTank(), 'deployTank reports success');
+  ok(g6.world.tanks.length === 1, 'world holds the deployed tank');
+  const tk = g6.world.tanks[0];
+  const eb = g6.world.enemyBase;
+  tk.x = eb.x - 500; tk.y = eb.y;           // put it in gun range of the enemy base
+  let shells = 0;
+  const origAddB = g6.world.addBullet.bind(g6.world);
+  g6.world.addBullet = (o) => { if (o && o.sound === 'shootTank') shells++; return origAddB(o); };
+  for (let i = 0; i < 300; i++) g6.world.update(1 / 60);
+  ok(shells > 0, `tank turret fired shells at the enemy base (${shells} shells in 5s)`);
+  const origDestroy = g6.world.onTankDestroyed;
+  let destroyed = 0;
+  g6.world.onTankDestroyed = (t) => { destroyed++; origDestroy(t); };
+  tk.hurt(99999, g6.world, 1);
+  g6.world.update(1 / 60);
+  ok(destroyed === 1, 'onTankDestroyed fired exactly once for the wreck');
+  ok(g6.tanks.length === 0, 'game dropped the dead tank from its roster');
+  ok(g6.world.tracks.length > 0, 'tank left tread marks on the field');
+
+  // A tank parked in the open must be targetable: bots and the base turret
+  // should be able to chip it down, or it would be an unkillable unit.
+  {
+    const g8 = new W.Game({ seed: 77 });
+    g8.view = W.Renderer.computeView(1280, 720);
+    g8.state = 'playing';
+    g8.level = W.Config.TANK.unlockLevel;
+    g8.deployTank();
+    const tank = g8.world.tanks[0];
+    g8.world.enemyBase.x = tank.x + 300;   // base turret gets a clear angle
+    g8.world.enemyBase.y = tank.y;
+    for (let i = 0; i < 4; i++) g8.world.addFighter(W.AI.spawnConfig('grunt', tank.x + 200, tank.y + 120, 1, 3));
+    const hp0 = tank.hp;
+    const in8 = new W.Input(null);
+    for (let i = 0; i < 60 * 12; i++) { in8.down.clear(); g8.update(1 / 120, in8); if (g8.state === 'levelup') g8.takeCard(0); }
+    ok(tank.hp < hp0 * 0.98 || tank.dead, 'enemy fire can damage a tank (' + Math.round(hp0) + ' -> ' + Math.round(tank.hp) + ')');
+  }
+}
+
+/* ------------------------------------------------------- level selection -- */
+console.log('\n== level selection ==');
+{
+  const lv = W.Config.LEVELS;
+  const g7 = new W.Game({ seed: 11 });
+  ok(g7.world.trees.length === lv[0].trees, `default map ${lv[0].name} built with ${lv[0].trees} trees`);
+  ok(g7.setLevel(lv[1].id), 'setLevel accepts a valid map id');
+  g7.reset();
+  ok(g7.world.levelId === lv[1].id, 'world carries the selected level id');
+  ok(g7.world.trees.length === lv[1].trees, `rebuilt map ${lv[1].name} has ${lv[1].trees} trees (pattern ${lv[1].pattern})`);
+  ok(!g7.setLevel('nope'), 'setLevel rejects unknown ids');
+  // the layouts actually differ geometrically, not just in tree count
+  const a = new W.Game({ seed: 33 }); const b = new W.Game({ seed: 33 });
+  b.setLevel(lv[2].id); b.reset();
+  const dist2 = (t1, t2) => (t1.x - t2.x) ** 2 + (t1.y - t2.y) ** 2;
+  let different = a.world.trees.length !== b.world.trees.length;
+  if (!different && a.world.trees.length === b.world.trees.length) {
+    different = a.world.trees.some((t1) => !b.world.trees.some((t2) => dist2(t1, t2) < 1));
+  }
+  ok(different, `${lv[0].name} and ${lv[2].name} produce different tree layouts`);
+}
+
+/* --------------------------------------------------- audio (headless) ---- */
+console.log('\n== audio (headless no-ops) ==');
+{
+  const A = new W.Audio();
+  const names = ['shootPistol', 'shootSmg', 'shootShotgun', 'shootLaser', 'shootRocket', 'shootTank',
+    'hit', 'clank', 'kill', 'squish', 'chunk', 'tree', 'fruit', 'pickup', 'hurt', 'dash', 'explode',
+    'levelup', 'win', 'lose', 'heartbeat', 'alarm', 'wind'];
+  let threw = null;
+  try {
+    for (const n of names) A.play(n);
+    A.setIntensity(3); A.setIntensity(-2); A.ensureMusic(); A.setMuted(true); A.setMuted(false);
+  } catch (e) { threw = e; }
+  ok(!threw, 'all sfx names + music controls no-op safely headless' + (threw ? ' -> ' + (threw.stack || threw) : ''));
+}
 
 console.log('\n' + (fail.length ? 'SMOKE FAILED (' + fail.length + ')' : 'SMOKE PASSED') + '\n');
 process.exit(fail.length ? 1 : 0);

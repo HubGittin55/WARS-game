@@ -3,6 +3,8 @@
 (function (W) {
   'use strict';
 
+  /* Squad cards upgrade every soldier (and are remembered across respawns).
+     The tank card is level-gated; it can be taken twice (two tanks). */
   const LIST = [
     { id: 'dmg', name: 'Hollow Points', tier: 1, max: 8, desc: '+18% damage', apply: (p) => { p.dmgMul += 0.18; } },
     { id: 'rate', name: 'Oiled Bolt', tier: 1, max: 8, desc: '+14% fire rate', apply: (p) => { p.rateMul *= 0.86; } },
@@ -16,15 +18,24 @@
     { id: 'armor', name: 'Ablative Plating', tier: 2, max: 5, desc: '-8% damage taken', apply: (p) => { p.armor = Math.min(0.6, p.armor + 0.08); } },
     { id: 'basehp', name: 'Reinforced Bunker', tier: 2, max: 6, desc: '+150 ally base HP (and heal)', apply: (p, game) => { if (game && game.playerBase) { game.playerBase.maxHp += 150; game.playerBase.hp += 150; } } },
     { id: 'turret', name: 'Turret Coolant', tier: 2, max: 5, desc: 'Ally base turret fires 15% faster', apply: (p, game) => { if (game && game.playerBase) game.playerBase.rateMul *= 0.85; } },
+    { id: 'sqDmg', name: 'Rifle Discipline', tier: 1, max: 4, squad: true, desc: 'Whole squad +12% damage', apply: (p, game) => { game && game.bumpSquad('dmg'); } },
+    { id: 'sqRate', name: 'Fresh Magazines', tier: 1, max: 4, squad: true, desc: 'Whole squad +10% fire rate', apply: (p, game) => { game && game.bumpSquad('rate'); } },
+    { id: 'sqArmor', name: 'Squad Body Armor', tier: 2, max: 4, squad: true, desc: 'Whole squad +15% HP & +10% armor', apply: (p, game) => { game && game.bumpSquad('hp'); } },
+    { id: 'reinforce', name: 'Reinforcements', tier: 1, max: 3, squad: true, desc: 'Recruit one more soldier (squad max 5)', req: (p, game) => game && game.squad.length < game._squadMax(), apply: (p, game) => { game && game._recruit(); } },
+    { id: 'tank', name: 'TANK UNLOCKED', tier: 2, max: 2, desc: 'Deploy a tracked gun-platform (max 2)', req: (p, game) => game && game.level >= game._tankUnlockLevel(), apply: (p, game) => { game && game.deployTank(); } },
   ];
 
   const Upgrades = {
     LIST,
     byId: (id) => LIST.find((u) => u.id === id),
 
-    /** Offer `n` distinct upgrade choices the player still has room for. */
-    roll(player, n, rng) {
-      const pool = LIST.filter((u) => (player.stacks[u.id] || 0) < (u.max === 99 ? 999 : u.max));
+    /** Offer `n` distinct upgrade choices the player still has room for.
+        `game` gates level-locked cards (req) — passed from Game.addXp. */
+    roll(player, n, rng, game) {
+      const pool = LIST.filter((u) => (
+        (player.stacks[u.id] || 0) < (u.max === 99 ? 999 : u.max) &&
+        (!u.req || u.req(player, game))
+      ));
       const out = [];
       const copy = pool.slice();
       for (let i = 0; i < n && copy.length; i++) {

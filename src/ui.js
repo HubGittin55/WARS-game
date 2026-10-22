@@ -33,6 +33,7 @@
       this.banner = null;
       this.bannerT = 0;
       this.cardRects = [];
+      this.levelRects = [];
       this.hover = -1;
       this.t = 0;
     }
@@ -58,7 +59,7 @@
       text(ctx, U.formatTime(game.time), view.w / 2, pad + 12, 15, C.text, 'center');
       text(ctx, 'WAVE ' + game.director.wave, view.w / 2, pad + 28, 10, C.textDim, 'center');
 
-      // Bottom-left: player vitals + weapon.
+      // Bottom-left: player vitals + weapon + squad/tank pips.
       const by = view.h - pad;
       if (p && !p.dead) {
         bar(ctx, pad, by - 26, 210, 14, p.hp / p.maxHp, p.hp / p.maxHp > .35 ? C.hp : C.hpLow, null);
@@ -68,6 +69,39 @@
         text(ctx, `${w.name.toUpperCase()}${wl}`, pad, by - 34, 13, p.weaponTime > 0 ? C.pickup : C.text);
       } else if (game.respawnT > 0) {
         text(ctx, `RESPAWN IN ${game.respawnT.toFixed(1)}s`, pad, by - 20, 14, C.teamEnemy);
+      }
+
+      // Squad pips: one square per soldier, to the right of the HP bar (lit = in the fight, outlined = respawning).
+      const sq = game.squad;
+      if (sq.length) {
+        let sx = pad + 218;
+        const sy = by - 25;
+        sq.forEach((f) => {
+          if (!f.dead) {
+            ctx.fillStyle = C.teamPlayer;
+            ctx.fillRect(sx, sy, 11, 11);
+            ctx.fillStyle = '#0b1014';
+            ctx.fillRect(sx + 1, sy + 7, 9 * (f.hp / f.maxHp), 3);
+          } else {
+            ctx.strokeStyle = C.teamPlayerDim;
+            ctx.lineWidth = 1.5;
+            ctx.strokeRect(sx + 1, sy + 1, 9, 9);
+          }
+          sx += 16;
+        });
+      }
+      // Tank pips: amber hulls with a slim HP bar, same row after the squad pips.
+      if (game.tanks.length) {
+        let tx = pad + 218 + sq.length * 16 + 8;
+        const ty = by - 27;
+        game.tanks.forEach((tk) => {
+          const f = tk.hp / tk.maxHp;
+          ctx.fillStyle = f > 0.4 ? C.accent : C.hpLow;
+          ctx.fillRect(tx, ty, 16, 10);
+          ctx.fillStyle = '#0b1014';
+          ctx.fillRect(tx + 1, ty + 6, 14 * f, 3);
+          tx += 20;
+        });
       }
 
       // XP bar across the bottom.
@@ -106,20 +140,81 @@
     drawTitle(ctx, view, game) {
       this.dim(ctx, view, 0.72);
       const cx = view.w / 2;
-      text(ctx, 'W A R S', cx, view.h * 0.3, 62, C.text, 'center', '800');
-      text(ctx, 'two bases · one gun · a lot of fruit', cx, view.h * 0.3 + 30, 14, C.accent, 'center');
+      text(ctx, 'W A R S', cx, view.h * 0.26, 58, C.text, 'center', '800');
+      text(ctx, 'two bases · a squad · a lot of lead', cx, view.h * 0.26 + 28, 14, C.accent, 'center');
+
+      // Difficulty mode selector (persists in localStorage; applies to the next run).
+      const modes = CFG.MODE_ORDER;
+      const sel = CFG.MODES[game.mode] ? game.mode : CFG.MODE_DEFAULT;
+      ctx.font = '700 13px ' + FONT;
+      const sizes = modes.map(m => ctx.measureText(CFG.MODES[m].label).width);
+      const gapM = 14, padM = 10;
+      const totalW = sizes.reduce((a, b) => a + b, 0) + padM * 2 * modes.length + gapM * (modes.length - 1);
+      let mx = cx - totalW / 2;
+      const my = view.h * 0.36;
+      ctx.textBaseline = 'middle';
+      modes.forEach((m, i) => {
+        const w = sizes[i] + padM * 2;
+        const isSel = sel === m;
+        if (isSel) {
+          ctx.fillStyle = 'rgba(255,209,102,.18)';
+          ctx.fillRect(mx, my - 12, w, 24);
+          ctx.strokeStyle = C.accent; ctx.lineWidth = 1.5;
+          ctx.strokeRect(mx + .5, my - 11.5, w - 1, 23);
+        }
+        ctx.textAlign = 'left';
+        ctx.fillStyle = isSel ? C.accent : C.textDim;
+        ctx.fillText(CFG.MODES[m].label, mx + padM, my);
+        mx += w + gapM;
+      });
+      ctx.textBaseline = 'alphabetic';
+      text(ctx, '← / → or 1–5 picks a mode · harder means a bigger swarm, and your squad carries more', cx, my + 24, 11, C.textDim, 'center');
+
+      // Map selector (Q / E, or click a name).
+      const lv = CFG.LEVELS;
+      const lsel = lv.find((l) => l.id === game.levelId) || lv[0];
+      ctx.font = '600 12px ' + FONT;
+      const lnames = lv.map(l => l.name);
+      const lsizes = lnames.map(n => ctx.measureText(n).width);
+      const gapL = 10, padL = 8;
+      const lTotal = lsizes.reduce((a, b) => a + b, 0) + padL * 2 * lv.length + gapL * (lv.length - 1);
+      let lx = cx - lTotal / 2;
+      const ly = view.h * 0.435;
+      ctx.textBaseline = 'middle';
+      lv.forEach((l, i) => {
+        const w = lsizes[i] + padL * 2;
+        const isSel = lsel.id === l.id;
+        if (isSel) {
+          ctx.fillStyle = 'rgba(87,200,255,.16)';
+          ctx.fillRect(lx, ly - 11, w, 22);
+          ctx.strokeStyle = C.teamPlayer; ctx.lineWidth = 1.5;
+          ctx.strokeRect(lx + .5, ly - 10.5, w - 1, 21);
+        }
+        ctx.textAlign = 'left';
+        ctx.fillStyle = isSel ? C.teamPlayer : C.textDim;
+        ctx.fillText(lnames[i], lx + padL, ly);
+        lx += w + gapL;
+      });
+      ctx.textBaseline = 'alphabetic';
+      this.levelRects = [];  // rebuilt each frame for mouse picking
+      lx = cx - lTotal / 2;
+      lv.forEach((l, i) => {
+        const w = lsizes[i] + padL * 2;
+        this.levelRects.push({ x: lx, y: ly - 12, w, h: 24, id: l.id });
+        lx += w + gapL;
+      });
+      text(ctx, `Q / E or click picks a map · ${lsel.desc}`, cx, ly + 22, 11, C.textDim, 'center');
 
       const lines = [
-        'WASD / ARROWS / LEFT STICK   move',
-        'MOUSE / RIGHT STICK          aim (auto-aim if you leave it alone)',
-        'AUTO-FIRE is ON              [F] to toggle, [SPACE] to shoot manually',
-        'SHIFT                        dash — brief i-frames, slip through the swarm',
-        'SHOOT TREES                  knock fruit loose, fruit heals you',
-        'GRAB CRATES                  temporary weapon upgrades',
-        'KILL ENEMIES                 XP -> level up -> pick a perk [1/2/3]',
-        'DESTROY THE ENEMY BASE       to win',
+        'WASD / ARROWS / LEFT STICK     move          SHIFT   dash (brief i-frames)',
+        'MOUSE / RIGHT STICK            aim           [F]     toggle auto-fire (on)',
+        'YOUR SQUAD fights beside you — level-up cards upgrade the whole unit',
+        `LEVEL ${CFG.TANK.unlockLevel} unlocks the TANK card: a tracked gun-platform that holds the line`,
+        'SHOOT TREES for fruit (scarce, but juicy)  ·  GRAB CRATES for temporary guns',
+        'KILL ENEMIES: XP → LEVEL UP → pick a perk [1/2/3]',
+        'DESTROY THE ENEMY BASE to win',
       ];
-      lines.forEach((l, i) => text(ctx, l, cx, view.h * 0.48 + i * 19, 12, i % 2 ? C.textDim : C.text, 'center'));
+      lines.forEach((l, i) => text(ctx, l, cx, view.h * 0.51 + i * 20, 12, i % 2 ? C.textDim : C.text, 'center'));
 
       const pulse = 0.55 + 0.45 * Math.sin(this.t * 4);
       ctx.globalAlpha = pulse;
@@ -131,8 +226,12 @@
     drawPause(ctx, view) {
       this.dim(ctx, view, 0.6);
       const cx = view.w / 2;
-      text(ctx, 'PAUSED', cx, view.h * 0.42, 40, C.text, 'center', '800');
-      text(ctx, 'P to resume · R to restart · M ' + (game0(this).audio.muted ? 'unmuted' : 'muted'), cx, view.h * 0.52, 13, C.textDim, 'center');
+      text(ctx, 'PAUSED', cx, view.h * 0.40, 40, C.text, 'center', '800');
+      text(ctx, 'P to resume · R to restart · M ' + (game0(this).audio.muted ? 'unmuted' : 'muted'), cx, view.h * 0.50, 13, C.textDim, 'center');
+      const g = game0(this);
+      const mlbl = CFG.MODES[g.mode] ? CFG.MODES[g.mode].label : CFG.MODES[CFG.MODE_DEFAULT].label;
+      const lv = (CFG.LEVELS.find((l) => l.id === g.levelId) || CFG.LEVELS[0]).name;
+      text(ctx, `MODE ${mlbl}  ·  MAP ${lv}   —   ← / → or 1–5 / Q E to change (applies after R)`, cx, view.h * 0.55, 11, C.textDim, 'center');
     }
 
     drawLevelUp(ctx, view, cards, game) {
@@ -170,7 +269,7 @@
       text(ctx, won ? 'BASE DESTROYED — YOU WIN' : 'DEFEAT', cx, view.h * 0.36, 42, won ? C.hp : C.teamEnemy, 'center', '800');
       const s = game.world.stats;
       const rows = [
-        `time ${U.formatTime(game.time)}   wave ${game.director.wave}   level ${game.level}`,
+        `time ${U.formatTime(game.time)}   wave ${game.director.wave}   level ${game.level}   mode ${CFG.MODES[game.mode] ? CFG.MODES[game.mode].label : CFG.MODES[CFG.MODE_DEFAULT].label}   map ${(CFG.LEVELS.find((l) => l.id === game.levelId) || CFG.LEVELS[0]).name}`,
         `kills ${s.kills}   shots ${s.shots}   accuracy ${s.shots ? Math.round((s.hits / s.shots) * 100) : 0}%`,
         `damage dealt ${Math.round(s.dmgDealt)}   damage taken ${Math.round(s.dmgTaken)}`,
         `fruit eaten ${s.fruit}   crates ${s.crates}   trees felled ${s.trees}`,
