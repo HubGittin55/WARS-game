@@ -1,5 +1,7 @@
 # WARS
 
+**[▶ Play it live](https://hubgittin55.github.io/WARS-game/)** — the current `main` build, in your browser.
+
 Top-down auto-shooter ("Contra meets bullet heaven") in plain HTML5 + canvas.
 Two bases trade fire while you fight through the swarm between them. Shoot their
 bunker to the ground before yours falls.
@@ -39,7 +41,13 @@ loads), so a server is never required — it is only there in case you prefer on
 
 Mouse aim is optional: if you never touch the mouse, auto-aim picks the nearest
 hostile for you — including the enemy base when you are standing next to it, so a
-walk-up becomes a point-blank beating.
+walk-up becomes a point-blank beating. Auto-aim only snaps to a target within
+±10° of your current aim line, so it will not yank your gun across the screen.
+
+**Control scheme** is picked on the title screen (click it, or press `C` to cycle)
+and is saved. KEYBOARD is the scheme above. MOUSE control steers with the mouse
+instead: left-click a spot and the fighter walks there; hold left-click to keep
+guiding him. The gun auto-aims while you steer (same ±10° snap rule).
 
 ## The loop
 

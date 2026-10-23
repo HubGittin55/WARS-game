@@ -108,6 +108,17 @@
     MODE_ORDER: ['easy', 'medium', 'hard', 'harder', 'hacker'],
     MODE_DEFAULT: 'medium',
 
+    /* --------------------------------------------------------- controls -- */
+    /* Control scheme, picked on the title screen (click or C); it is saved.
+       keys:  WASD/arrows move, mouse (or auto-aim) aims.
+       mouse: left-click a spot to walk there, hold left-click to keep
+              guiding; movement is mouse-driven and the gun auto-aims. */
+    CONTROLS: [
+      { id: 'keys',  label: 'KEYBOARD', desc: 'WASD moves · mouse aims, auto-aim when idle' },
+      { id: 'mouse', label: 'MOUSE',    desc: 'Click to move there · hold to guide · gun auto-aims' },
+    ],
+    CONTROL_DEFAULT: 'keys',
+
     /* ------------------------------------------------------- levels/maps -- */
     /* Five arena layouts, picked per run (seeded). Same arena size, different
        tree geometry — scatter / ring / lanes / forest / quarters. */
@@ -169,6 +180,8 @@
       iframes: 0.55,     // invulnerable seconds after taking a hit
       respawn: 2.6,      // seconds to respawn at own base
       aimAssist: 0.22,   // radians of forgiveness when snapping to nearest target
+      autoAimSnapDeg: 10, // auto-aim only snaps to a target within +/- this many
+                          // degrees of the current aim line (no cross-screen yanks)
       targetRange: 620,  // auto-aim search radius
       // Dash: a short burst with i-frames. This is the dodge that keeps a run
       // alive when the swarm closes in — Shift / B / left bumper.

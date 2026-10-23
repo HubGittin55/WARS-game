@@ -23,6 +23,7 @@
     mode1: ['Digit1'], mode2: ['Digit2'], mode3: ['Digit3'], mode4: ['Digit4'], mode5: ['Digit5'],
     levelLeft: ['KeyQ'],
     levelRight: ['KeyE'],
+    cycleControl: ['KeyC'],
   };
 
   class Input {

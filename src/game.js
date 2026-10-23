@@ -26,6 +26,8 @@
       this.player = null;
       this.mode = this._loadMode();
       this.levelId = this._loadLevel();
+      this.control = this._loadControl();
+      this.moveTarget = null;   // mouse-control destination (world coords)
       this.world.mode = this.mode;
       this.world.levelId = this.levelId;
       this.squad = [];        // soldier fighters (game-owned; world culls them on death)
@@ -155,6 +157,26 @@
       return true;
     }
 
+    /* --------------------------------------------------------- control --- */
+    _loadControl() {
+      try {
+        const c = localStorage.getItem('wars_control');
+        if (c && CFG.CONTROLS.some((x) => x.id === c)) return c;
+      } catch (e) {}
+      return CFG.CONTROL_DEFAULT;
+    }
+    setControl(id) {
+      if (!CFG.CONTROLS.some((x) => x.id === id)) return false;
+      if (id === this.control) return true;
+      this.control = id;
+      this.moveTarget = null;
+      try { localStorage.setItem('wars_control', id); } catch (e) {}
+      const ctl = CFG.CONTROLS.find((x) => x.id === id);
+      this.ui.flashBanner('CONTROL ' + ctl.label, C.text);
+      this.audio.play('pickup');
+      return true;
+    }
+
     /* ----------------------------------------------------------- level --- */
     _loadLevel() {
       try {
@@ -185,6 +207,7 @@
       this.cards = [];
       this.respawnT = 0;
       this.deaths = 0;
+      this.moveTarget = null;
       this.hurtFlash = this.healFlash = 0;
       this.squad = [];
       this.squadResp = [];
@@ -438,7 +461,28 @@
       const p = this.player;
       if (!p || p.dead) return;
 
-      const mv = input.moveVector();
+      const mouseControl = this.control === 'mouse';
+
+      // --- movement ------------------------------------------------------
+      let mv;
+      if (mouseControl) {
+        // Click-to-move: while the left button is held the destination tracks
+        // the cursor (hold to guide); after a plain click the last destination
+        // sticks, so the fighter keeps walking there until he arrives.
+        if (input.mouse.left && input.mouse.inside && this.view) {
+          this.moveTarget = input.toWorld(this.view, this.camera);
+        }
+        mv = { x: 0, y: 0, m: 0 };
+        if (this.moveTarget) {
+          const dx = this.moveTarget.x - p.x, dy = this.moveTarget.y - p.y;
+          const d = Math.hypot(dx, dy);
+          if (d <= Math.max(p.r + 6, 18)) this.moveTarget = null;
+          else mv = { x: dx / d, y: dy / d, m: 1 };
+        }
+      } else {
+        this.moveTarget = null;
+        mv = input.moveVector();
+      }
       // Dash first: while it is running we must not fight its velocity.
       if (input.pressedAction('dash') || input.pad.dash) p.tryDash(mv.x, mv.y, this.world);
       if (p.dashT <= 0) {
@@ -449,7 +493,9 @@
       }
 
       // --- aim ---------------------------------------------------------
-      const useMouse = (input.moveMode === 'mouse' && input.mouse.inside) || (input.pad.ax || input.pad.ay);
+      // In mouse-control mode the mouse is busy steering, so the gun always
+      // auto-aims (a gamepad aim stick still overrides).
+      const useMouse = !mouseControl && ((input.moveMode === 'mouse' && input.mouse.inside) || (input.pad.ax || input.pad.ay));
       let aim = null;
       if (useMouse) {
         const wpt = input.toWorld(this.view, this.camera);
@@ -459,17 +505,29 @@
       } else {
         // Context auto-aim: pick the closest hostile *edge* — including the enemy
         // base, so walking into their bunker means you start pounding it.
+        // Snap rule: a target only counts if it sits within +/- autoAimSnapDeg
+        // of the current aim line; anything wider is ignored and the gun holds
+        // its line instead of yanking across the screen.
+        const snap = (CFG.PLAYER.autoAimSnapDeg || 10) * Math.PI / 180;
+        const inCone = (ang) => Math.abs(U.angleDiff(p.aim, ang)) <= snap;
         const eb = this.world.enemyBase;
         const foe = this.world.nearestEnemy(p, p.team, p.aimRange);
         const foeD = foe ? U.dist(p.x, p.y, foe.x, foe.y) - foe.r : Infinity;
         const baseD = eb.alive ? U.dist(p.x, p.y, eb.x, eb.y) - eb.r : Infinity;
-        if (foe && foeD <= baseD) {
-          aim = U.angleTo(p.x, p.y, foe.x + (foe.vx || 0) * 0.12, foe.y + (foe.vy || 0) * 0.12);
+        const foeAim = foe ? U.angleTo(p.x, p.y, foe.x + (foe.vx || 0) * 0.12, foe.y + (foe.vy || 0) * 0.12) : null;
+        const foeOk = foe && inCone(foeAim);
+        const b = eb.alive ? eb : this.world.playerBase;
+        const baseAim = U.angleTo(p.x, p.y, b.x, b.y);
+        const baseOk = inCone(baseAim);
+        if (foeOk && (!baseOk || foeD <= baseD)) {
+          aim = foeAim;
           this.aimPoint = { x: foe.x, y: foe.y };
-        } else {
-          const b = eb.alive ? eb : this.world.playerBase;
-          aim = U.angleTo(p.x, p.y, b.x, b.y);
+        } else if (baseOk) {
+          aim = baseAim;
           this.aimPoint = { x: b.x, y: b.y };
+        } else {
+          // Nothing in the snap cone: hold the current line.
+          this.aimPoint = { x: p.x + Math.cos(p.aim) * 140, y: p.y + Math.sin(p.aim) * 140 };
         }
         this.aimMode = 'auto';
       }
@@ -489,6 +547,16 @@
       this.camera.apply(ctx);
       R.drawBackground(ctx, world, this.camera);
       R.drawWorld(ctx, world, this.camera, this);
+      // Mouse-control destination marker (world space, pulsing ring + X).
+      if (this.control === 'mouse' && this.moveTarget && this.state === 'playing') {
+        const mt = this.moveTarget, pulse = 5 + 2 * Math.sin(this.ui.t * 6);
+        ctx.strokeStyle = C.accent; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(mt.x, mt.y, 9 + pulse * 0.4, 0, Math.PI * 2); ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(mt.x - 5, mt.y - 5); ctx.lineTo(mt.x + 5, mt.y + 5);
+        ctx.moveTo(mt.x + 5, mt.y - 5); ctx.lineTo(mt.x - 5, mt.y + 5);
+        ctx.stroke();
+      }
       ctx.restore();
 
       // Screen-space layers.

@@ -77,6 +77,15 @@
       else if (input.consume('levelRight')) changeLevel(1);
     }
 
+    /** Cycle the control scheme (title screen; persists like mode/map). */
+    function tryControlKeys() {
+      if (!input.consume('cycleControl')) return;
+      const order = CFG.CONTROLS.map((c) => c.id);
+      let idx = order.indexOf(game.control);
+      if (idx < 0) idx = 0;
+      game.setControl(order[(idx + 1) % order.length]);
+    }
+
     function hotkeys() {
       if (input.consume('mute')) game.audio.setMuted(!game.audio.muted);
       if (input.consume('toggleAuto')) {
@@ -93,6 +102,7 @@
         case 'title':
           tryModeKeys();
           tryLevelKeys();
+          tryControlKeys();
           if (input.consume('start')) game.start();
           break;
         case 'playing':
@@ -133,6 +143,8 @@
         const pt = viewPoint(e.clientX, e.clientY);
         const lvRect = (game.ui.levelRects || []).find((r2) => U.boxHit(r2, pt.vx, pt.vy));
         if (lvRect) { game.setLevel(lvRect.id); game.audio.play('pickup', { vol: 0.6 }); return; }
+        const ctlRect = (game.ui.controlRects || []).find((r2) => U.boxHit(r2, pt.vx, pt.vy));
+        if (ctlRect) { game.setControl(ctlRect.id); return; }
         game.start();
         return;
       }
@@ -151,6 +163,8 @@
           const pt = viewPoint(t.clientX, t.clientY);
           const lvRect = (game.ui.levelRects || []).find((r2) => U.boxHit(r2, pt.vx, pt.vy));
           if (lvRect) { game.setLevel(lvRect.id); game.audio.play('pickup', { vol: 0.6 }); return; }
+          const ctlRect = (game.ui.controlRects || []).find((r2) => U.boxHit(r2, pt.vx, pt.vy));
+          if (ctlRect) { game.setControl(ctlRect.id); return; }
         }
       }
       if (game.state === 'title') game.start();

@@ -121,7 +121,10 @@ ok(game.world.trees.length === W.Config.TREE.count, `map built ${game.world.tree
 ok(game.world.bases.length === 2, 'two bases exist (player + enemy)');
 ok(game.world.playerBase.team === 0 && game.world.enemyBase.team === 1, 'bases are on opposite teams');
 ok(game.world.stats.shots > 50, `shots were fired (${game.world.stats.shots})`);
-ok(game.director.spawned > 10, `director spawned bots (${game.director.spawned})`);
+// Spawn count is cap-gated, so it tracks kill throughput: the +/-10deg
+// auto-aim cone (2026-10-22) costs the headless player exactly one spawn
+// cycle here (11 -> 10, verified against the pre-cone build). Floor is 10.
+ok(game.director.spawned >= 10, `director spawned bots (${game.director.spawned})`);
 ok(game.world.stats.kills > 0, `player-team kills registered (${game.world.stats.kills})`);
 ok(maxBullets > 5 && maxBullets <= W.Config.WORLD.MAX_BULLETS, `bullet count stayed in range (peak ${maxBullets})`);
 ok(game.world.fighters.length <= W.Config.BOT.maxAlive + 2, `bot cap respected (${game.world.fighters.length} fighters incl. player)`);
@@ -342,6 +345,59 @@ console.log('\n== level selection ==');
     different = a.world.trees.some((t1) => !b.world.trees.some((t2) => dist2(t1, t2) < 1));
   }
   ok(different, `${lv[0].name} and ${lv[2].name} produce different tree layouts`);
+}
+
+/* ------------------------------------------------------- controls ------- */
+console.log('\n== controls & auto-aim cone ==');
+{
+  const U = W.Util;
+  const g9 = new W.Game({ seed: 21 });
+  ok(g9.control === 'keys', 'default control scheme is keyboard');
+  ok(!g9.setControl('nope'), 'setControl rejects unknown ids');
+  ok(g9.setControl('mouse'), 'setControl accepts mouse');
+  g9.view = W.Renderer.computeView(1280, 720);
+  g9.draw(mockCtx, g9.view, 1, new W.Input(null));   // title screen draw path
+  ok(g9.ui.controlRects.length === W.Config.CONTROLS.length, 'title screen built control selector chips');
+  g9.setControl('keys'); g9.draw(mockCtx, g9.view, 1, new W.Input(null));
+  g9.setControl('mouse');
+
+  // Click-to-move: hold a click east of the player, then release; the fighter
+  // should walk there and clear the destination on arrival.
+  g9.state = 'playing';
+  const p = g9.player;
+  const in9 = new W.Input(null);
+  const tx = p.x + 170, ty = p.y;
+  in9.mouse.inside = true; in9.mouse.left = true;
+  in9.mouse.x = g9.view.offsetX + (tx - g9.camera.x) * g9.view.scale;
+  in9.mouse.y = g9.view.offsetY + (ty - g9.camera.y) * g9.view.scale;
+  const x0 = p.x;
+  for (let i = 0; i < 30; i++) { g9.update(1 / 60, in9); if (g9.state === 'levelup') g9.takeCard(0); }
+  ok(!!g9.moveTarget, 'holding left-click set a move target');
+  ok(p.x - x0 > 25, `mouse control walked the fighter east (${Math.round(p.x - x0)}px in 0.5s)`);
+  in9.mouse.left = false;
+  for (let i = 0; i < 240 && g9.moveTarget; i++) { g9.update(1 / 60, in9); if (g9.state === 'levelup') g9.takeCard(0); }
+  ok(g9.moveTarget === null, 'click destination cleared on arrival');
+  ok(Math.abs(p.x - tx) < 60, `fighter stopped near the clicked spot (off by ${Math.round(Math.abs(p.x - tx))}px)`);
+
+  // Auto-aim cone: an enemy 90 degrees off the aim line must be ignored,
+  // one inside +/-10 degrees must be snapped to.
+  const g10 = new W.Game({ seed: 23 });
+  g10.state = 'playing';
+  g10.view = W.Renderer.computeView(1280, 720);
+  const p10 = g10.player;
+  const in10 = new W.Input(null);
+  p10.aim = 0;   // looking due east
+  const north = g10.world.addFighter({ team: 1, type: 'grunt', x: p10.x, y: p10.y - 200 });
+  north.spawnGuard = 0;   // nearestEnemy skips spawn-guarded fighters
+  for (let i = 0; i < 30; i++) g10.update(1 / 60, in10);
+  ok(Math.abs(U.angleDiff(p10.aim, -Math.PI / 2)) > 1.2, 'auto-aim ignored an enemy 90 degrees off the aim line');
+  north.dead = true;   // take the off-line enemy out of the second phase
+  const a8 = -8 * Math.PI / 180;
+  const inCone = g10.world.addFighter({ team: 1, type: 'grunt', x: p10.x + Math.cos(a8) * 200, y: p10.y + Math.sin(a8) * 200 });
+  inCone.spawnGuard = 0;
+  let bestDiff = Infinity;
+  for (let i = 0; i < 30; i++) { g10.update(1 / 60, in10); bestDiff = Math.min(bestDiff, Math.abs(U.angleDiff(p10.aim, a8))); }
+  ok(bestDiff < 0.06, 'auto-aim snapped to an enemy inside the +/-10 degree cone');
 }
 
 /* --------------------------------------------------- audio (headless) ---- */

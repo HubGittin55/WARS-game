@@ -34,6 +34,7 @@
       this.bannerT = 0;
       this.cardRects = [];
       this.levelRects = [];
+      this.controlRects = [];
       this.hover = -1;
       this.t = 0;
     }
@@ -205,6 +206,36 @@
       });
       text(ctx, `Q / E or click picks a map · ${lsel.desc}`, cx, ly + 22, 11, C.textDim, 'center');
 
+      // Control selector (click a chip, or C to cycle; persists like mode/map).
+      const ctls = CFG.CONTROLS;
+      const csel = ctls.find((c) => c.id === game.control) || ctls[0];
+      ctx.font = '700 13px ' + FONT;
+      const cnames = ctls.map(c => c.label);
+      const csizes = cnames.map(n => ctx.measureText(n).width);
+      const gapC = 12, padC = 10;
+      const cTotal = csizes.reduce((a, b) => a + b, 0) + padC * 2 * ctls.length + gapC * (ctls.length - 1);
+      let ccx = cx - cTotal / 2;
+      const cy2 = view.h * 0.505;
+      ctx.textBaseline = 'middle';
+      this.controlRects = [];
+      ctls.forEach((c, i) => {
+        const w = csizes[i] + padC * 2;
+        const isSel = csel.id === c.id;
+        if (isSel) {
+          ctx.fillStyle = 'rgba(126,231,135,.15)';
+          ctx.fillRect(ccx, cy2 - 12, w, 24);
+          ctx.strokeStyle = C.hp; ctx.lineWidth = 1.5;
+          ctx.strokeRect(ccx + .5, cy2 - 11.5, w - 1, 23);
+        }
+        ctx.textAlign = 'left';
+        ctx.fillStyle = isSel ? C.hp : C.textDim;
+        ctx.fillText(cnames[i], ccx + padC, cy2);
+        this.controlRects.push({ x: ccx, y: cy2 - 12, w, h: 24, id: c.id });
+        ccx += w + gapC;
+      });
+      ctx.textBaseline = 'alphabetic';
+      text(ctx, `C or click picks control · ${csel.desc}`, cx, cy2 + 24, 11, C.textDim, 'center');
+
       const lines = [
         'WASD / ARROWS / LEFT STICK     move          SHIFT   dash (brief i-frames)',
         'MOUSE / RIGHT STICK            aim           [F]     toggle auto-fire (on)',
@@ -214,7 +245,7 @@
         'KILL ENEMIES: XP → LEVEL UP → pick a perk [1/2/3]',
         'DESTROY THE ENEMY BASE to win',
       ];
-      lines.forEach((l, i) => text(ctx, l, cx, view.h * 0.51 + i * 20, 12, i % 2 ? C.textDim : C.text, 'center'));
+      lines.forEach((l, i) => text(ctx, l, cx, view.h * 0.585 + i * 19, 12, i % 2 ? C.textDim : C.text, 'center'));
 
       const pulse = 0.55 + 0.45 * Math.sin(this.t * 4);
       ctx.globalAlpha = pulse;
